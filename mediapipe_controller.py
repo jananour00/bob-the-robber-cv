@@ -2,9 +2,12 @@ import asyncio
 import json
 import threading
 import time
-import urllib.request
 import csv
 import math
+import argparse
+import sys
+import tkinter as tk
+from tkinter import ttk
 from datetime import datetime
 from collections import Counter, deque
 from pathlib import Path
@@ -36,6 +39,16 @@ latest_state = {
 state_lock = threading.Lock()
 stop_event = threading.Event()
 
+os_keymap = {
+    "left": "Key.left",
+    "right": "Key.right",
+    "up": "Key.up",
+    "down": "Key.down",
+    "action": "Key.space",
+    "auto_hold_enabled": False,
+    "auto_hold_key": "w"
+}
+
 clients = set()
 clients_lock = asyncio.Lock()
 
@@ -55,6 +68,64 @@ def ensure_model_file():
     urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
     print(f"Saved model to {MODEL_PATH}")
     return MODEL_PATH
+
+def launch_gui():
+    root = tk.Tk()
+    root.title("KineticLink Control Mapper")
+    root.geometry("450x400")
+    
+    options = [
+        "Key.left", "Key.right", "Key.up", "Key.down", 
+        "Key.space", "Key.enter", "Key.shift", "Key.ctrl", "Key.alt",
+        "w", "a", "s", "d", "e", "q", "f", "r"
+    ]
+    
+    tk.Label(root, text="Map Rehab Gestures to Game Keys:", font=("Helvetica", 12, "bold")).pack(pady=10)
+    
+    frame = tk.Frame(root)
+    frame.pack(pady=10)
+    
+    def create_row(row_idx, label_text, default_val):
+        tk.Label(frame, text=label_text).grid(row=row_idx, column=0, padx=10, pady=5, sticky="e")
+        cb = ttk.Combobox(frame, values=options)
+        cb.set(default_val)
+        cb.grid(row=row_idx, column=1, padx=10, pady=5)
+        return cb
+        
+    left_cb = create_row(0, "Sweep Left:", "Key.left")
+    right_cb = create_row(1, "Sweep Right:", "Key.right")
+    up_cb = create_row(2, "Flick Up:", "Key.up")
+    down_cb = create_row(3, "Sweep Down:", "Key.down")
+    action_cb = create_row(4, "Pinch (Action):", "Key.space")
+    
+    ttk.Separator(frame, orient='horizontal').grid(row=5, column=0, columnspan=2, sticky='ew', pady=15)
+    
+    auto_hold_var = tk.BooleanVar(value=False)
+    tk.Checkbutton(frame, text="Auto-Hold Key (Gas Pedal):", variable=auto_hold_var).grid(row=6, column=0, padx=10, pady=5, sticky="e")
+    
+    auto_hold_cb = ttk.Combobox(frame, values=options)
+    auto_hold_cb.set("w")
+    auto_hold_cb.grid(row=6, column=1, padx=10, pady=5)
+    
+    def on_start():
+        global os_keymap
+        os_keymap["left"] = left_cb.get()
+        os_keymap["right"] = right_cb.get()
+        os_keymap["up"] = up_cb.get()
+        os_keymap["down"] = down_cb.get()
+        os_keymap["action"] = action_cb.get()
+        os_keymap["auto_hold_enabled"] = auto_hold_var.get()
+        os_keymap["auto_hold_key"] = auto_hold_cb.get()
+        root.destroy()
+        
+    def on_close():
+        stop_event.set()
+        root.destroy()
+        
+    root.protocol("WM_DELETE_WINDOW", on_close)
+    tk.Button(root, text="Start Tracker", font=("Helvetica", 12), bg="#4CAF50", fg="white", command=on_start).pack(pady=20)
+    root.eval('tk::PlaceWindow . center')
+    root.mainloop()
 
 def smooth_move(move_history):
     if not move_history:
@@ -384,19 +455,133 @@ async def main():
     async with serve(handler, HOST, PORT):
         await broadcaster()
 
+def str_to_pynput_key(key_str):
+    from pynput.keyboard import Key, KeyCode
+    if key_str.startswith("Key."):
+        attr = key_str.split(".")[1]
+        if hasattr(Key, attr):
+            return getattr(Key, attr)
+    return KeyCode.from_char(key_str)
+
+def os_keyboard_loop():
+    try:
+        from pynput.keyboard import Key, Controller
+    except ImportError:
+        print("ERROR: pynput is required for --os-keyboard mode. Run: pip install pynput")
+        stop_event.set()
+        return
+
+    keyboard = Controller()
+    
+    current_pressed_moves = set()
+    current_pressed_action = False
+    
+    print("Started OS Keyboard simulation mode! Your physical keyboard is now being controlled by the AI.")
+    
+    key_left = str_to_pynput_key(os_keymap["left"])
+    key_right = str_to_pynput_key(os_keymap["right"])
+    key_up = str_to_pynput_key(os_keymap["up"])
+    key_down = str_to_pynput_key(os_keymap["down"])
+    key_action = str_to_pynput_key(os_keymap["action"])
+    
+    key_auto_hold = None
+    if os_keymap["auto_hold_enabled"]:
+        key_auto_hold = str_to_pynput_key(os_keymap["auto_hold_key"])
+        
+    current_auto_hold_pressed = False
+    
+    while not stop_event.is_set():
+        time.sleep(1 / SEND_FPS) # Match standard FPS rate
+        
+        with state_lock:
+            target_move = latest_state["move"]
+            target_action = latest_state["action"]
+            is_tracked = latest_state["tracked"]
+            
+        # Auto-hold logic (Fatigue therapy)
+        if key_auto_hold:
+            if is_tracked and not current_auto_hold_pressed:
+                keyboard.press(key_auto_hold)
+                current_auto_hold_pressed = True
+            elif not is_tracked and current_auto_hold_pressed:
+                keyboard.release(key_auto_hold)
+                current_auto_hold_pressed = False
+            
+        # Parse moves (e.g. "left+down" or "idle")
+        if target_move == "idle":
+            target_moves_set = set()
+        else:
+            target_moves_set = set(target_move.split("+"))
+            
+        # Release old keys
+        for m in current_pressed_moves - target_moves_set:
+            if m == "left": keyboard.release(key_left)
+            elif m == "right": keyboard.release(key_right)
+            elif m == "up": keyboard.release(key_up)
+            elif m == "down": keyboard.release(key_down)
+            
+        # Press new keys
+        for m in target_moves_set - current_pressed_moves:
+            if m == "left": keyboard.press(key_left)
+            elif m == "right": keyboard.press(key_right)
+            elif m == "up": keyboard.press(key_up)
+            elif m == "down": keyboard.press(key_down)
+            
+        current_pressed_moves = target_moves_set
+        
+        # Action (Pinch) -> Spacebar
+        if target_action and not current_pressed_action:
+            keyboard.press(key_action)
+            current_pressed_action = True
+        elif not target_action and current_pressed_action:
+            keyboard.release(key_action)
+            current_pressed_action = False
+            
+    # Safety cleanup: ensure all keys are released on exit
+    for m in current_pressed_moves:
+        if m == "left": keyboard.release(key_left)
+        elif m == "right": keyboard.release(key_right)
+        elif m == "up": keyboard.release(key_up)
+        elif m == "down": keyboard.release(key_down)
+    if current_pressed_action:
+        keyboard.release(key_action)
+    if current_auto_hold_pressed and key_auto_hold:
+        keyboard.release(key_auto_hold)
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="KineticLink Rehab Tracker")
+    parser.add_argument("--os-keyboard", action="store_true", help="Enable OS-level keyboard simulation for any game")
+    args = parser.parse_args()
+
+    if args.os_keyboard:
+        launch_gui()
+        if stop_event.is_set():
+            sys.exit(0)
+
     vision_thread = threading.Thread(target=vision_loop, daemon=True)
     vision_thread.start()
     
     logger_thread = threading.Thread(target=csv_logger_loop, daemon=True)
     logger_thread.start()
     
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
-    finally:
-        stop_event.set()
-        vision_thread.join(timeout=2)
-        logger_thread.join(timeout=2)
+    if args.os_keyboard:
+        keyboard_thread = threading.Thread(target=os_keyboard_loop, daemon=True)
+        keyboard_thread.start()
+        try:
+            while not stop_event.is_set():
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            stop_event.set()
+            keyboard_thread.join(timeout=2)
+    else:
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            pass
+        finally:
+            stop_event.set()
+            
+    vision_thread.join(timeout=2)
+    logger_thread.join(timeout=2)

@@ -37,14 +37,25 @@ Every second, it logs:
    ```
 
 ### Running the Tracker
+
+**Mode 1: Web Game (Default)**
 1. Start the backend computer vision server:
    ```bash
    python mediapipe_controller.py
    ```
    *Note: On the first run, the script will automatically download the required MediaPipe ML model (`hand_landmarker.task`).*
-2. A video window titled **"KineticLink Rehab Tracker"** will appear and remain pinned to the top of your screen, showing live skeletal tracking and real-time medical metrics.
-3. Open `index.html` in any modern web browser to launch the gamified frontend.
-4. Click **"Enable Python MediaPipe"** on the browser UI to connect the game to your physical movements.
+2. Open `index.html` in any modern web browser to launch the gamified frontend.
+3. Click **"Enable Python MediaPipe"** on the browser UI to connect.
+
+**Mode 2: Universal OS Keyboard (Play Any Game)**
+You can use the tracker to play any desktop game or emulator on your computer. In this mode, the AI physically injects keyboard presses into your operating system!
+1. Start the server with the keyboard flag:
+   ```bash
+   python mediapipe_controller.py --os-keyboard
+   ```
+2. A **KineticLink Control Mapper** settings window will appear on your screen.
+3. Use the dropdown menus to map the 5 clinical gestures (Pinch, Flick, Sweeps) to whatever keys your desktop game uses (e.g., WASD, Arrow Keys, Space).
+4. Click **"Start Tracker"**. The camera window will open, and your AI movements will now trigger your custom keystrokes!
 
 ### Exiting
 To safely shut down the tracker and finalize the CSV log file, make sure the Python video window is in focus and press either the **`Q`** key or the **`ESC`** key.
